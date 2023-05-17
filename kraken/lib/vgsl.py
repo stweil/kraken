@@ -244,6 +244,8 @@ class TorchVGSLModel(object):
         """
         self.nn.eval()
         torch.set_grad_enabled(False)
+        # torch.set_float32_matmul_precision('medium')
+        # self.log("tuts 2?", true)
 
     def train(self) -> None:
         """
@@ -256,12 +258,16 @@ class TorchVGSLModel(object):
         if not self.criterion:
             self.nn[-1].eval()
         torch.set_grad_enabled(True)
+        # torch.set_float32_matmul_precision('medium')
+        # self.log("tuts 3?", true)
 
     def set_num_threads(self, num: int) -> None:
         """
         Sets number of OpenMP threads to use.
         """
         torch.set_num_threads(num)
+        # torch.set_float32_matmul_precision('medium')
+        # self.log("tuts 4?", true)
 
     @classmethod
     def load_model(cls, path: Union[str, PathLike]):
