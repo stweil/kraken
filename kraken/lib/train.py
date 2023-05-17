@@ -120,6 +120,7 @@ class KrakenTrainer(L.Trainer):
 
         kwargs['callbacks'].extend([KrakenSetOneChannelMode(), KrakenSaveModel()])
         super().__init__(*args, **kwargs)
+        torch.set_float32_matmul_precision('medium')
         self.automatic_optimization = False
 
     def fit(self, *args, **kwargs):
@@ -653,6 +654,8 @@ class RecognitionModel(L.LightningModule):
             self.net = self.nn.nn
 
             torch.set_num_threads(max(self.num_workers, 1))
+            # torch.set_float32_matmul_precision('medium')
+            # self.log("tuts?", true)
 
     def train_dataloader(self):
         return DataLoader(self.train_set,
