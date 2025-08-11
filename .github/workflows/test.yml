@@ -20,6 +20,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies and kraken
         run: |
+          sudo apt-get install -y libopenblas-dev
           python -m pip install --upgrade pip
           pip install .[test] flake8
       - name: Lint with flake8
