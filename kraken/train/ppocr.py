@@ -99,6 +99,7 @@ class PPOCRv6RecognitionDataModule(VGSLRecognitionDataModule):
         return DataLoader(self.train_set,
                           batch_size=self.trainer.lightning_module.hparams.config.batch_size,
                           num_workers=self.hparams.data_config.num_workers,
+                          persistent_workers=self.hparams.data_config.num_workers > 0,
                           pin_memory=True,
                           shuffle=True,
                           collate_fn=self._collate_fn)
@@ -108,6 +109,7 @@ class PPOCRv6RecognitionDataModule(VGSLRecognitionDataModule):
                           shuffle=False,
                           batch_size=self.trainer.lightning_module.hparams.config.batch_size,
                           num_workers=self.hparams.data_config.num_workers,
+                          persistent_workers=self.hparams.data_config.num_workers > 0,
                           pin_memory=True,
                           collate_fn=self._collate_fn,
                           worker_init_fn=validation_worker_init_fn)
