@@ -188,7 +188,7 @@ class PPOCRv6RecognitionModel(KrakenTrainerModule):
         self._bos = self._eos = None
         # label-smoothed CE over NRTR tokens, PAD (0) ignored
         self.nrtr_criterion = nn.CrossEntropyLoss(ignore_index=0, label_smoothing=0.1)
-        # replaced by a compiled wrapper in setup()
+        # replaced by a compiled wrapper in on_fit_start()
         self._gtc_loss_fn = self._gtc_loss
 
     def on_fit_start(self):
@@ -198,6 +198,8 @@ class PPOCRv6RecognitionModel(KrakenTrainerModule):
         fn = getattr(autograd_graph, 'set_warn_on_accumulate_grad_stream_mismatch', None)
         if fn is not None:
             fn(False)
+        self.net.nn.forward_train = torch.compile(self.net.nn.forward_train, dynamic=False)
+        self._gtc_loss_fn = torch.compile(self._gtc_loss, dynamic=False)
 
     def forward(self, x, seq_lens=None):
         return self.net(x, seq_lens)
@@ -317,8 +319,6 @@ class PPOCRv6RecognitionModel(KrakenTrainerModule):
             if self._nrtr_pad_len > (max_len := self.nrtr_head.positional_encoding.pe.shape[1]):
                 raise ValueError(f'max_width {max_width} exceeds the NRTR decoder '
                                  f'capacity ({max_len} tokens).')
-            self.net.nn.forward_train = torch.compile(self.net.nn.forward_train, dynamic=False)
-            self._gtc_loss_fn = torch.compile(self._gtc_loss, dynamic=False)
         elif stage == 'test':
             if self.net is None:
                 raise ValueError('No network to test; load a model before testing.')
