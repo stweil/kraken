@@ -51,7 +51,7 @@ class PPOCRv6Model(nn.Module, CTCRecognitionInferenceMixin, RecognitionBaseModel
             extractor.
     """
 
-    _kraken_min_version = '7.0.0'
+    _kraken_min_version = '7.1.0'
 
     def __init__(self,
                  variant: PPOCRv6Variant = 'small',
