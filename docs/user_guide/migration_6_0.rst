@@ -110,9 +110,7 @@ Example usage with the same file:
 Training Outputs, Checkpoints, and Weights
 ------------------------------------------
 
-For ``ketos train``, ``ketos segtrain``, and ``ketos rotrain``, training now
-produces Lightning checkpoints (``.ckpt``) as the primary artifact instead of
-writing a CoreML weights file directly during training.
+For ``ketos train``, ``ketos pretrain``, ``ketos segtrain``, and ``ketos rotrain``, training now produces Lightning checkpoints (``.ckpt``) as the primary artifact instead of writing a CoreML weights file directly during training.
 
 Checkpoint files include the full training state (model weights, optimizer
 state, scheduler state, epoch/step counters, and serialized training config),
@@ -120,9 +118,9 @@ which enables exact continuation of interrupted runs.
 
 There are now two distinct continuation modes:
 
-- ``--resume`` restores and continues from the checkpoint's exact previous
-  training state. The checkpoint state is authoritative, even if command-line
-  flags or config files specify different values.
+- ``--resume`` restores and continues from the checkpoint's previous training state.
+  Saved settings are used by default, while training options explicitly supplied on the command line or in an experiment file override the corresponding values.
+  Training and validation data settings are always restored from the checkpoint.
 - ``--load`` keeps the previous "fine-tune/start new run" behavior. It loads
   weights only and starts a fresh training run using current CLI/config
   hyperparameters.

@@ -100,9 +100,9 @@ cancellation), it can be continued from the last saved checkpoint using the
 Unlike ``--load``, which only restores the model weights and starts a fresh
 training run, ``--resume`` restores the full training state: model weights,
 optimizer state, learning rate scheduler position, and the current epoch count.
-Training continues exactly where it left off. No training data or
-hyperparameter options need to be provided on the command line as these are
-restored from the checkpoint as well.
+Training continues where it left off using the settings stored in the checkpoint.
+Training options explicitly supplied on the command line or in an experiment file override the corresponding saved settings.
+Training and validation data settings are always restored from the checkpoint, so no data options need to be supplied when resuming.
 
 kraken also saves an emergency checkpoint (``checkpoint_abort.ckpt``) when
 training is interrupted by an unhandled exception.
@@ -310,7 +310,7 @@ segtrain
                                     annotated with a central line.
     -cl, --centerline
     -bl, --baseline
-    --logger [tensorboard]          Logger used by PyTorch Lightning to track
+    --logger [tensorboard, wandb]   Logger used by PyTorch Lightning to track
                                     metrics such as loss and accuracy.
     --log-dir PATH                  Path to directory where the logger will
                                     store the logs. If not set, a directory
