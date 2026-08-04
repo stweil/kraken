@@ -143,6 +143,23 @@ def _user_supplied_params(ctx: click.Context) -> dict[str, Any]:
     return explicit
 
 
+def _load_resume_config(path: 'PathLike',
+                        explicit: dict[str, Any],
+                        params: dict[str, Any]) -> tuple[Any, set[str]]:
+    """
+    Loads a checkpoint's module configuration and applies explicit overrides.
+
+    Returns the merged configuration and the explicitly supplied keys that do not belong to it.
+    """
+    from kraken.models.convert import load_checkpoint_config
+
+    config = load_checkpoint_config(path)
+    config_keys = set(vars(config))
+    for key in explicit.keys() & config_keys:
+        setattr(config, key, params[key])
+    return config, explicit.keys() - config_keys
+
+
 def _arch_names(task: str) -> list[str]:
     """
     Lists the architecture names registered for `task` in the

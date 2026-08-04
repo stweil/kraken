@@ -26,10 +26,15 @@ from PIL import Image
 
 from kraken.registry import OPTIMIZERS, SCHEDULERS, STOPPERS
 
-from .util import _expand_gt, _validate_manifests, _validate_pl_logger, message
+from .util import (_expand_gt, _load_resume_config, _user_supplied_params,
+                   _validate_manifests, _validate_pl_logger, message)
 
 logging.captureWarnings(True)
 logger = logging.getLogger('kraken')
+
+_NON_CONFIG_PARAMS = frozenset({'load', 'resume', 'ground_truth',
+                                'training_data', 'evaluation_data',
+                                'pl_logger', 'log_dir'})
 
 # raise default max image size to 20k * 20k pixels
 Image.MAX_IMAGE_PIXELS = 20000 ** 2
@@ -178,6 +183,7 @@ def pretrain(ctx, **kwargs):
     """
     Trains a model from image-text pairs.
     """
+    explicit = _user_supplied_params(ctx)
     params = ctx.meta.copy()
     params.update(ctx.params)
     resume = params.pop('resume', None)
@@ -214,23 +220,28 @@ def pretrain(ctx, **kwargs):
     if len(params['training_data']) == 0:
         raise click.UsageError('No training data was provided to the train command. Use `-t` or the `ground_truth` argument.')
 
-    if params['freq'] > 1:
-        val_check_interval = {'check_val_every_n_epoch': int(params['freq'])}
+    if resume:
+        m_config, ignored = _load_resume_config(resume, explicit, params)
+        if ignored := sorted(ignored - _NON_CONFIG_PARAMS):
+            logger.warning(f'Resuming from a checkpoint restores its data configuration; explicitly set data options {ignored} are ignored.')
     else:
-        val_check_interval = {'val_check_interval': params['freq']}
+        dm_config = VGSLPreTrainingDataConfig(**params)
+        m_config = VGSLPreTrainingConfig(**params)
 
-    cbs = [KrakenOnExceptionCheckpoint(dirpath=params.get('checkpoint_path'),
+    if m_config.freq > 1:
+        val_check_interval = {'check_val_every_n_epoch': int(m_config.freq)}
+    else:
+        val_check_interval = {'val_check_interval': m_config.freq}
+
+    cbs = [KrakenOnExceptionCheckpoint(dirpath=m_config.checkpoint_path,
                                        filename='checkpoint_abort')]
-    checkpoint_callback = ModelCheckpoint(dirpath=Path(params.pop('checkpoint_path')),
+    checkpoint_callback = ModelCheckpoint(dirpath=Path(m_config.checkpoint_path),
                                           save_top_k=10,
                                           monitor='CE',
                                           mode='min',
                                           auto_insert_metric_name=False,
                                           filename='checkpoint_{epoch:02d}-{val_metric:.4f}')
     cbs.append(checkpoint_callback)
-
-    dm_config = VGSLPreTrainingDataConfig(**params)
-    m_config = VGSLPreTrainingConfig(**params)
 
     if resume:
         data_module = PretrainDataModule.load_from_checkpoint(resume, weights_only=False)
@@ -240,14 +251,14 @@ def pretrain(ctx, **kwargs):
     trainer = KrakenTrainer(accelerator=ctx.meta['accelerator'],
                             devices=ctx.meta['device'],
                             precision=ctx.meta['precision'],
-                            max_epochs=params['epochs'] if params['quit'] == 'fixed' else -1,
-                            min_epochs=params['min_epochs'],
+                            max_epochs=m_config.epochs if m_config.quit == 'fixed' else -1,
+                            min_epochs=m_config.min_epochs,
                             enable_progress_bar=True if not ctx.meta['verbose'] else False,
                             deterministic=ctx.meta['deterministic'],
                             enable_model_summary=False,
-                            accumulate_grad_batches=params['accumulate_grad_batches'],
+                            accumulate_grad_batches=m_config.accumulate_grad_batches,
                             callbacks=cbs,
-                            gradient_clip_val=params['gradient_clip_val'],
+                            gradient_clip_val=m_config.gradient_clip_val,
                             num_sanity_val_steps=0,
                             use_distributed_sampler=False,
                             pl_logger=params.get('pl_logger'),
@@ -263,7 +274,7 @@ def pretrain(ctx, **kwargs):
                 model = RecognitionPretrainModel.load_from_weights(load, m_config)
         elif resume:
             message(f'Resuming from checkpoint {resume}.')
-            model = RecognitionPretrainModel.load_from_checkpoint(resume, weights_only=False)
+            model = RecognitionPretrainModel.load_from_checkpoint(resume, config=m_config, weights_only=False)
         else:
             message('Initializing new model.')
             model = RecognitionPretrainModel(m_config)
@@ -277,6 +288,6 @@ def pretrain(ctx, **kwargs):
     score = checkpoint_callback.best_model_score.item()
     message(f'Best model checkpoint: {checkpoint_callback.best_model_path}')
 
-    weight_path = Path(checkpoint_callback.best_model_path).with_name(f'best_{score:.4f}.{params.get("weights_format")}')
-    opath = convert_models([checkpoint_callback.best_model_path], weight_path, weights_format=params['weights_format'])
+    weight_path = Path(checkpoint_callback.best_model_path).with_name(f'best_{score:.4f}.{m_config.weights_format}')
+    opath = convert_models([checkpoint_callback.best_model_path], weight_path, weights_format=m_config.weights_format)
     message(f'Converting best model {checkpoint_callback.best_model_path} (score: {score:.4f}) to weights file {opath}')

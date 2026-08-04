@@ -27,7 +27,7 @@ from threadpoolctl import threadpool_limits
 from kraken.registry import OPTIMIZERS, SCHEDULERS, STOPPERS
 
 from .util import (_arch_names, _expand_gt, _resolve_module_class,
-                   _user_supplied_params, _validate_manifests,
+                   _load_resume_config, _user_supplied_params, _validate_manifests,
                    _validate_pl_logger, message)
 
 logging.captureWarnings(True)
@@ -243,24 +243,25 @@ def train(ctx, **kwargs):
         cfg_kwargs['evaluation_data'] = p['evaluation_data']
         cfg_kwargs['partition'] = 1
 
-    dm_config = data_config_cls(**cfg_kwargs)
-    m_config = config_cls(**cfg_kwargs)
+    if resume:
+        m_config, ignored = _load_resume_config(resume, explicit, cfg_kwargs)
+        if ignored := sorted(ignored - _NON_CONFIG_PARAMS):
+            logger.warning(f'Resuming from a checkpoint restores its data configuration; explicitly set data options {ignored} are ignored.')
+    else:
+        dm_config = data_config_cls(**cfg_kwargs)
+        m_config = config_cls(**cfg_kwargs)
 
-    if dm_config.bidi_reordering and p['base_dir'] != 'auto':
-        dm_config.bidi_reordering = p['base_dir']
-
-    if resume and (ignored := sorted(explicit.keys() - _NON_CONFIG_PARAMS)):
-        logger.warning('Resuming from a checkpoint restores its full training state; '
-                       f'explicitly set hyperparameters {ignored} are ignored.')
+        if dm_config.bidi_reordering and p['base_dir'] != 'auto':
+            dm_config.bidi_reordering = p['base_dir']
 
     if m_config.freq > 1:
         val_check_interval = {'check_val_every_n_epoch': int(m_config.freq)}
     else:
         val_check_interval = {'val_check_interval': m_config.freq}
 
-    cbs = [KrakenOnExceptionCheckpoint(dirpath=p['checkpoint_path'],
+    cbs = [KrakenOnExceptionCheckpoint(dirpath=m_config.checkpoint_path,
                                        filename='checkpoint_abort')]
-    checkpoint_callback = ModelCheckpoint(dirpath=Path(p['checkpoint_path']),
+    checkpoint_callback = ModelCheckpoint(dirpath=Path(m_config.checkpoint_path),
                                           save_top_k=10,
                                           monitor='val_metric',
                                           mode='max',
@@ -298,7 +299,7 @@ def train(ctx, **kwargs):
                 model = module_cls.load_from_weights(load, config=m_config)
         elif resume:
             message(f'Resuming from checkpoint {resume}.')
-            model = module_cls.load_from_checkpoint(resume, weights_only=False)
+            model = module_cls.load_from_checkpoint(resume, config=m_config, weights_only=False)
         else:
             message('Initializing new model.')
             model = module_cls(m_config)

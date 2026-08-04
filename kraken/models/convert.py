@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-__all__ = ['convert_models', 'load_from_checkpoint',
+__all__ = ['convert_models', 'load_checkpoint_config', 'load_from_checkpoint',
            'find_checkpoint_module', 'find_weights_archs']
 
 
@@ -32,6 +32,20 @@ def _register_safe_globals() -> None:
     torch.serialization.add_safe_globals(safe_globals)
 
 
+def load_checkpoint_config(path: Union[str, 'PathLike']):
+    """Loads the module configuration stored in a Lightning checkpoint."""
+    import torch
+
+    _register_safe_globals()
+    ckpt = torch.load(path, weights_only=True, map_location='cpu', mmap=True)
+    config = ckpt.get('_module_config')
+    if config is None:
+        config = ckpt.get('hyper_parameters', {}).get('config')
+    if config is None:
+        raise ValueError(f'{path} contains no kraken module configuration.')
+    return config
+
+
 def find_checkpoint_module(path: Union[str, 'PathLike']) -> type:
     """
     Identifies the KrakenTrainerModule subclass that produced a checkpoint
@@ -42,15 +56,7 @@ def find_checkpoint_module(path: Union[str, 'PathLike']) -> type:
         ValueError: when the checkpoint contains no configuration or no
         registered lightning module matches it.
     """
-    import torch
-
-    _register_safe_globals()
-    ckpt = torch.load(path, weights_only=True, map_location='cpu', mmap=True)
-    config = ckpt.get('_module_config')
-    if config is None:
-        config = ckpt.get('hyper_parameters', {}).get('config')
-    if config is None:
-        raise ValueError(f'{path} contains no kraken module configuration.')
+    config = load_checkpoint_config(path)
     candidates = []
     for ep in importlib.metadata.entry_points(group='kraken.lightning_modules'):
         cls = ep.load()
