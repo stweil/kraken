@@ -354,9 +354,12 @@ class PPOCRv6RecognitionModel(KrakenTrainerModule):
                             one_channel_mode=one_channel_mode,
                             legacy_polygons=False)
 
-    def _gtc_loss(self, feat, tgt):
+    def _gtc_loss(self, feat, tgt, out_lens):
         # auxiliary NRTR decoder shares the backbone feature
-        logits = self.nrtr_head(feat, tgt[:, :-1])          # (N, T-1, V)
+        memory_mask = None
+        if out_lens is not None:
+            memory_mask = torch.arange(feat.shape[-1], device=feat.device)[None, :] < out_lens[:, None]
+        logits = self.nrtr_head(feat, tgt[:, :-1], memory_mask)  # (N, T-1, V)
         return self.nrtr_criterion(logits.reshape(-1, logits.shape[-1]),
                                    tgt[:, 1:].reshape(-1))
 
@@ -387,7 +390,7 @@ class PPOCRv6RecognitionModel(KrakenTrainerModule):
 
         # GTC: auxiliary NRTR decoder shares the backbone feature.
         tgt = self._nrtr_targets(batch['target'], batch['target_lens'], feat.device)
-        nrtr_loss = self._gtc_loss_fn(feat, tgt)
+        nrtr_loss = self._gtc_loss_fn(feat, tgt, out_lens)
         loss = ctc_loss + nrtr_loss
         self.log('train_gtc_loss', nrtr_loss, on_step=True, on_epoch=True,
                  batch_size=bs, sync_dist=True)

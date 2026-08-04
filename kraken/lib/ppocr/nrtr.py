@@ -83,7 +83,7 @@ class MultiheadAttention(nn.Module):
         self.out_proj = nn.Linear(embed_dim, embed_dim)
         self.embed_dim = embed_dim
 
-    def forward(self, query, key=None, attn_mask=None):
+    def forward(self, query, key=None, attn_mask=None, key_mask=None):
         B, qN, _ = query.shape
         if self.self_attn:
             qkv = self.qkv(query).reshape(B, qN, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
@@ -96,6 +96,8 @@ class MultiheadAttention(nn.Module):
         attn = (q @ k.transpose(-2, -1)) * self.scale
         if attn_mask is not None:
             attn = attn + attn_mask
+        if key_mask is not None:
+            attn = attn.masked_fill(~key_mask[:, None, None, :], float('-inf'))
         attn = self.attn_drop(attn.softmax(dim=-1))
         x = (attn @ v).transpose(1, 2).reshape(B, qN, self.embed_dim)
         return self.out_proj(x)
@@ -128,9 +130,9 @@ class DecoderBlock(nn.Module):
         self.norm3 = nn.LayerNorm(d_model, eps=1e-5)
         self.dropout3 = nn.Dropout(dropout)
 
-    def forward(self, tgt, memory, self_mask=None):
+    def forward(self, tgt, memory, self_mask=None, memory_mask=None):
         tgt = self.norm1(tgt + self.dropout1(self.self_attn(tgt, attn_mask=self_mask)))
-        tgt = self.norm2(tgt + self.dropout2(self.cross_attn(tgt, key=memory)))
+        tgt = self.norm2(tgt + self.dropout2(self.cross_attn(tgt, key=memory, key_mask=memory_mask)))
         tgt = self.norm3(tgt + self.dropout3(self.mlp(tgt)))
         return tgt
 
@@ -175,11 +177,12 @@ class NRTRHead(nn.Module):
         # additive mask: 0 on/below the diagonal, -inf above
         return torch.triu(torch.full((sz, sz), float('-inf'), device=device), diagonal=1)
 
-    def forward(self, feat, tgt_in):
+    def forward(self, feat, tgt_in, memory_mask=None):
         """
         Args:
             feat: backbone feature ``(B, C, 1, W)``.
             tgt_in: teacher-forcing input tokens ``(B, T)`` ([BOS, c1, ..., EOS][:-1]).
+            memory_mask: valid backbone columns ``(B, W)``.
         Returns:
             logits ``(B, T, vocab_size)``.
         """
@@ -187,5 +190,5 @@ class NRTRHead(nn.Module):
         tgt = self.positional_encoding(self.embedding(tgt_in))     # (B, T, d_model)
         mask = self._causal_mask(tgt.shape[1], tgt.device)
         for layer in self.decoder:
-            tgt = layer(tgt, memory, self_mask=mask)
+            tgt = layer(tgt, memory, self_mask=mask, memory_mask=memory_mask)
         return self.tgt_word_prj(tgt)
