@@ -74,14 +74,13 @@ def collate_static_width(batch, max_width: int):
 class PPOCRv6RecognitionDataModule(VGSLRecognitionDataModule):
     """
     Recognition datamodule for PP-OCRv6 models.
-
-    Identical to the VGSL datamodule except for static shapes: every batch is
-    padded to ``max_width`` and samples that are wider or whose targets do not
-    fit into the subsampled output sequence are rejected at the dataset level.
     """
 
     def __init__(self, data_config: PPOCRv6RecognitionTrainingDataConfig):
         super().__init__(data_config)
+        if getattr(self, 'test_set', None) is not None:
+            self.test_set.dataset.max_width = None
+            self.test_set.dataset.subsampling = None
 
     def _build_dataset(self, DatasetClass, training_data, **kwargs):
         return super()._build_dataset(DatasetClass,
@@ -120,7 +119,7 @@ class PPOCRv6RecognitionDataModule(VGSLRecognitionDataModule):
                           batch_size=self.trainer.lightning_module.hparams.config.batch_size,
                           num_workers=self.hparams.data_config.num_workers,
                           pin_memory=True,
-                          collate_fn=self._collate_fn,
+                          collate_fn=collate_sequences,
                           worker_init_fn=validation_worker_init_fn)
 
 
