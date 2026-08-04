@@ -64,6 +64,37 @@ When using compiled datasets, set ``format_type`` to ``binary``.
 Use Cases
 ---------
 
+Choosing a Recognition Architecture
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+kraken supports two recognition model architectures: VGSL and PP-OCRv6.
+New models use VGSL by default.
+To train a PP-OCRv6 model, select the architecture with ``--arch``:
+
+.. code-block:: console
+
+    $ ketos train --arch ppocrv6 -t training_manifest.txt -e validation_manifest.txt
+
+Compared with VGSL models, PP-OCRv6 models offer faster recognition and generally produce better results, particularly on large-scale datasets.
+A general-purpose model is available for each variant and can be used as a starting point for fine-tuning.
+The drawback is that PP-OCRv6 models require kraken 7.1 or newer and cannot be used with older versions.
+
+When fine-tuning, resuming training, or testing a model, kraken determines the architecture from the weights or checkpoint.
+In these cases, ``--arch`` can usually be omitted.
+If it is given, it must match the loaded model.
+
+VGSL networks are configured with ``--spec``.
+PP-OCRv6 provides ``tiny``, ``small``, and ``medium`` variants, selected with ``--variant``.
+The default is ``small``:
+
+.. code-block:: console
+
+    $ ketos train --arch ppocrv6 --variant medium -t training_manifest.txt -e validation_manifest.txt
+
+The ``--height`` option sets the normalized line height.
+The ``--max-width`` option sets the maximum accepted width after height normalization during training and validation.
+Their defaults are 96 and 2560 pixels, respectively.
+
 Training from Scratch
 ~~~~~~~~~~~~~~~~~~~~~
 
@@ -122,9 +153,9 @@ cancellation), it can be continued from the last saved checkpoint using the
 Unlike ``--load``, which only restores the model weights and starts a fresh
 training run, ``--resume`` restores the full training state: model weights,
 optimizer state, learning rate scheduler position, and the current epoch count.
-Training continues exactly where it left off. No training data or
-hyperparameter options need to be provided on the command line as these are
-restored from the checkpoint as well.
+Training continues where it left off using the settings stored in the checkpoint.
+Training options explicitly supplied on the command line or in an experiment file override the corresponding saved settings.
+Training and validation data settings are always restored from the checkpoint, so no data options need to be supplied when resuming.
 
 kraken also saves an emergency checkpoint (``checkpoint_abort.ckpt``) when
 training is interrupted by an unhandled exception.
@@ -224,6 +255,20 @@ options are nested under the subcommand name:
         'b': [22]
         'c': [23, 24]
 
+For PP-OCRv6, select the architecture and model variant in the ``train`` section:
+
+.. code-block:: yaml
+
+    train:
+      arch: ppocrv6
+      variant: medium
+      height: 96
+      max_width: 2560
+      training_data:
+        - train.lst
+      evaluation_data:
+        - val.lst
+
 .. note::
 
     The YAML keys correspond to the Python parameter names of the click
@@ -237,6 +282,9 @@ Model Conversion
 At the end of a successful training run, kraken will automatically convert the
 best performing checkpoint into a weights file in the format specified by
 ``--weights-format`` (default: ``safetensors``).
+
+PP-OCRv6 models can only be saved in safetensors format.
+Core ML output is only supported for VGSL models.
 
 If you need to convert a checkpoint manually, you can use the ``ketos convert``
 command.
@@ -344,7 +392,7 @@ train
                                     bbox for path data, and the recorded type
                                     for binary datasets.
     --augment / --no-augment        Enable image augmentation
-    --logger [tensorboard]          Logger used by PyTorch Lightning to track
+    --logger [tensorboard, wandb]   Logger used by PyTorch Lightning to track
                                     metrics such as loss and accuracy.
     --log-dir PATH                  Path to directory where the logger will
                                     store the logs. If not set, a directory
@@ -419,6 +467,20 @@ To pretrain a model:
 
 The pretrained model is saved as a checkpoint which can then be used as a
 starting point for supervised fine-tuning with ``ketos train --load``.
+
+Resuming Pretraining
+~~~~~~~~~~~~~~~~~~~~
+
+If pretraining is interrupted, it can be continued from the last saved checkpoint:
+
+.. code-block:: console
+
+    $ ketos pretrain --resume checkpoint_0005.ckpt
+
+Unlike ``--load``, ``--resume`` restores the model, optimizer, learning rate scheduler, and current epoch.
+Pretraining continues using the settings stored in the checkpoint.
+Training options explicitly supplied on the command line or in an experiment file override the corresponding saved settings.
+Training and validation data settings are always restored from the checkpoint, so no data options need to be supplied when resuming.
 
 The key pretraining-specific parameters control the masking strategy:
 
@@ -548,3 +610,9 @@ pretrain
                                     contrastive loss.
     -lt, --logit-temp FLOAT         Multiplicative factor for the logits used
                                     in contrastive loss.
+    --logger [tensorboard, wandb]   Logger used by PyTorch Lightning to track
+                                    metrics such as loss and accuracy.
+    --log-dir PATH                  Path to directory where the logger will
+                                    store the logs. If not set, a directory
+                                    will be created in the current working
+                                    directory.

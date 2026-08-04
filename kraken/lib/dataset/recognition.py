@@ -20,6 +20,7 @@ import json
 import torch
 import numpy as np
 import pyarrow as pa
+import pyarrow.compute as pc
 import traceback
 import dataclasses
 import multiprocessing as mp
@@ -31,14 +32,14 @@ from typing import TYPE_CHECKING, Any, Literal, Optional, Union
 
 from PIL import Image
 from ctypes import c_char
-from torchvision.transforms import InterpolationMode
 from torchvision.transforms import v2
 from torch.utils.data import Dataset
 
 from kraken.containers import BaselineLine, BBoxLine, Segmentation
 from kraken.lib import functional_im_transforms as F_t
 from kraken.lib.codec import PytorchCodec
-from kraken.lib.exceptions import KrakenEncodeException, KrakenInputException
+from kraken.lib.dataset.augment import DefaultAugmenter
+from kraken.lib.exceptions import KrakenEncodeException
 from kraken.lib.segmentation import extract_polygons
 from kraken.lib.util import is_bitonal, open_image
 
@@ -55,35 +56,22 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-class DefaultAugmenter():
-    def __init__(self):
-        self._blur = v2.RandomChoice([
-            v2.GaussianBlur(kernel_size=3, sigma=(0.1, 1.0)),
-            v2.GaussianBlur(kernel_size=5, sigma=(0.1, 2.0)),
-        ])
-        self._deform = v2.RandomChoice([
-            v2.RandomPerspective(distortion_scale=0.2, p=1.0, fill=0.0),
-            v2.RandomRotation(degrees=3,
-                              interpolation=InterpolationMode.BILINEAR,
-                              fill=0.0),
-            v2.RandomAffine(degrees=0,
-                            translate=(0.04, 0.04),
-                            scale=(0.9, 1.1),
-                            shear=(-3.0, 3.0),
-                            interpolation=InterpolationMode.BILINEAR,
-                            fill=0.0),
-        ])
-        self._dropout = v2.RandomErasing(p=1.0,
-                                         scale=(0.2, 0.2),
-                                         value=0.0)
-        self._augment = v2.RandomApply([v2.Compose([
-            v2.RandomApply([self._dropout], p=0.2),
-            v2.RandomApply([self._blur], p=0.2),
-            v2.RandomApply([self._deform], p=0.2),
-        ])], p=0.5)
-
-    def __call__(self, image: torch.Tensor, index: int) -> torch.Tensor:
-        return self._augment(image).clamp(0.0, 1.0)
+def _check_sample_fit(im, target, max_width: Optional[int], subsampling: Optional[int]):
+    """
+    Raises a ValueError if a transformed sample is wider than `max_width` or
+    its minimal CTC alignment (all labels plus a blank between repeated
+    labels) does not fit into the subsampled width.
+    """
+    if max_width and im.shape[-1] > max_width:
+        raise ValueError(f'Sample width {im.shape[-1]} exceeds max_width {max_width}')
+    if subsampling:
+        if isinstance(target, str):
+            repeats = sum(a == b for a, b in zip(target, target[1:]))
+        else:
+            repeats = int((target[1:] == target[:-1]).sum())
+        if len(target) + repeats > im.shape[-1] // subsampling:
+            raise ValueError(f'Minimal CTC alignment length {len(target) + repeats} exceeds '
+                             f'output sequence length {im.shape[-1] // subsampling}')
 
 
 class ArrowIPCRecognitionDataset(Dataset):
@@ -98,7 +86,9 @@ class ArrowIPCRecognitionDataset(Dataset):
                  reorder: Union[bool, Literal['L', 'R']] = True,
                  im_transforms: Callable[[Any], torch.Tensor] = v2.Identity(),
                  augmentation: bool = False,
-                 split_filter: Optional[str] = None) -> None:
+                 split_filter: Optional[str] = None,
+                 max_width: Optional[int] = None,
+                 subsampling: Optional[int] = None) -> None:
         """
         Creates a dataset for a polygonal (baseline) transcription model.
 
@@ -117,14 +107,24 @@ class ArrowIPCRecognitionDataset(Dataset):
                           are sampled, if set to `train`, `validation`, or
                           `test` only rows with the appropriate flag set in the
                           file will be considered.
+            max_width: Maximum sample width after transformation. Wider
+                       samples are treated as invalid and resampled.
+            subsampling: Width subsampling factor of the network. Samples
+                         whose encoded target cannot be CTC-aligned within
+                         the subsampled width are treated as invalid and
+                         resampled.
         """
         self.alphabet: Counter = Counter()
         self.text_transforms: list[Callable[[str], str]] = []
         self.failed_samples = set()
         self.transforms = im_transforms
         self.aug = None
+        self.max_width = max_width
+        self.subsampling = subsampling
         self._split_filter = split_filter
         self._num_lines = 0
+        self._indices = np.empty(0, dtype=np.int64)
+        self._transformed_alphabet: Counter = Counter()
         self.arrow_table = None
         self.codec = None
         self.skip_empty_lines = skip_empty_lines
@@ -186,53 +186,65 @@ class ArrowIPCRecognitionDataset(Dataset):
             self.legacy_polygons_status = "mixed"
 
         self.alphabet.update(metadata['alphabet'])
-        num_lines = metadata['counts'][self._split_filter] if self._split_filter else metadata['counts']['all']
+        # Rows excluded by the split filter or empty-line detection are only
+        # masked out in `self._indices` rather than filtered from the table
+        # itself since pa.Table.filter() copies all selected rows out of the
+        # memory map.
+        mask = np.ones(len(ds_table), dtype=bool)
         if self._split_filter:
-            ds_table = ds_table.filter(ds_table.column(self._split_filter))
+            mask &= ds_table.column(self._split_filter).to_numpy(zero_copy_only=False)
         if self.skip_empty_lines:
             logger.debug('Getting indices of empty lines after text transformation.')
             self.skip_empty_lines = False
-            mask = np.ones(len(ds_table), dtype=bool)
-            for index in range(len(ds_table)):
+            candidates = np.flatnonzero(mask)
+            texts = pc.struct_field(ds_table.column('lines'), 'text').take(candidates)
+            for index, text in zip(candidates, texts.to_pylist()):
                 try:
-                    self._apply_text_transform(ds_table.column('lines')[index].as_py(),)
-                except KrakenInputException:
+                    self._transformed_alphabet.update(self._apply_text_transform(text))
+                except ValueError:
                     mask[index] = False
-                    continue
-            num_lines = np.count_nonzero(mask)
-            logger.debug(f'Filtering out {np.count_nonzero(~mask)} empty lines')
-            if np.any(~mask):
-                ds_table = ds_table.filter(pa.array(mask))
             self.skip_empty_lines = True
+            logger.debug(f'Filtering out {len(candidates) - np.count_nonzero(mask)} empty lines')
+        indices = np.flatnonzero(mask)
         if not self.arrow_table:
             self.arrow_table = ds_table
         else:
+            indices += len(self.arrow_table)
             self.arrow_table = pa.concat_tables([self.arrow_table, ds_table])
-        self._num_lines += num_lines
+        self._indices = np.concatenate([self._indices, indices])
+        self._num_lines += len(indices)
 
     def rebuild_alphabet(self):
         """
         Recomputes the alphabet depending on the given text transformation.
+
+        When `skip_empty_lines` is enabled the alphabet of the transformed
+        text has already been accumulated during empty-line detection in
+        `add()` and is just swapped in here.
         """
+        if self.skip_empty_lines:
+            self.alphabet = self._transformed_alphabet.copy()
+            return
         self.alphabet = Counter()
-        for index in range(len(self)):
+        texts = pc.struct_field(self.arrow_table.column('lines'), 'text').take(self._indices)
+        for text in texts.to_pylist():
             try:
-                text = self._apply_text_transform(self.arrow_table.column('lines')[index].as_py(),)
+                text = self._apply_text_transform(text)
                 self.alphabet.update(text)
-            except KrakenInputException:
+            except ValueError:
                 continue
 
-    def _apply_text_transform(self, sample) -> str:
+    def _apply_text_transform(self, text: str) -> str:
         """
         Applies text transform to a sample.
         """
-        text = sample['text']
+        orig_text = text
         for func in self.text_transforms:
             text = func(text)
         if not text:
-            logger.debug(f'Text line "{sample["text"]}" is empty after transformations')
+            logger.debug(f'Text line "{orig_text}" is empty after transformations')
             if not self.skip_empty_lines:
-                raise KrakenInputException('empty text line')
+                raise ValueError('empty text line')
         return text
 
     def encode(self, codec: Optional[PytorchCodec] = None) -> None:
@@ -242,15 +254,14 @@ class ArrowIPCRecognitionDataset(Dataset):
         if codec:
             self.codec = codec
             logger.info(f'Trying to encode dataset with codec {codec}')
-            for index in range(self._num_lines):
+            texts = pc.struct_field(self.arrow_table.column('lines'), 'text').take(self._indices)
+            for text in texts.to_pylist():
                 try:
-                    text = self._apply_text_transform(
-                        self.arrow_table.column('lines')[index].as_py(),
-                    )
+                    text = self._apply_text_transform(text)
                     self.codec.encode(text)
                 except KrakenEncodeException as e:
                     raise e
-                except KrakenInputException:
+                except ValueError:
                     pass
         else:
             self.codec = PytorchCodec(''.join(self.alphabet.keys()))
@@ -265,7 +276,7 @@ class ArrowIPCRecognitionDataset(Dataset):
         if len(self.failed_samples) == len(self):
             raise ValueError(f'All {len(self)} samples in dataset invalid.')
         try:
-            sample = self.arrow_table.column('lines')[index].as_py()
+            sample = self.arrow_table.column('lines')[int(self._indices[index])].as_py()
             logger.debug(f'Loading sample {index}')
             im = Image.open(io.BytesIO(sample['im']))
             im = self.transforms(im)
@@ -285,7 +296,9 @@ class ArrowIPCRecognitionDataset(Dataset):
                     logger.info(f'Upgrading "im_mode" from {self._im_mode.value} to {im_mode}')
                     self._im_mode.value = im_mode
 
-            text = self._apply_text_transform(sample)
+            text = self._apply_text_transform(sample['text'])
+            target = self.codec.encode(text) if self.codec is not None else text
+            _check_sample_fit(im, target, self.max_width, self.subsampling)
         except Exception:
             self.failed_samples.add(index)
             idx = np.random.randint(0, len(self))
@@ -293,7 +306,7 @@ class ArrowIPCRecognitionDataset(Dataset):
             logger.info(f'Failed. Replacing with sample {idx}')
             return self[idx]
 
-        return {'image': im, 'target': self.codec.encode(text) if self.codec is not None else text}
+        return {'image': im, 'target': target}
 
     def __len__(self) -> int:
         return self._num_lines
@@ -316,7 +329,9 @@ class PolygonGTDataset(Dataset):
                  reorder: Union[bool, Literal['L', 'R']] = True,
                  im_transforms: Callable[[Any], torch.Tensor] = v2.Identity(),
                  augmentation: bool = False,
-                 legacy_polygons: bool = False) -> None:
+                 legacy_polygons: bool = False,
+                 max_width: Optional[int] = None,
+                 subsampling: Optional[int] = None) -> None:
         """
         Creates a dataset for a polygonal (baseline) transcription model.
 
@@ -330,6 +345,12 @@ class PolygonGTDataset(Dataset):
             im_transforms: Function taking an PIL.Image and returning a tensor
                            suitable for forward passes.
             augmentation: Enables augmentation.
+            max_width: Maximum sample width after transformation. Wider
+                       samples are treated as invalid and resampled.
+            subsampling: Width subsampling factor of the network. Samples
+                         whose encoded target cannot be CTC-aligned within
+                         the subsampled width are treated as invalid and
+                         resampled.
         """
         self._images: Union[list[Image.Image], list[torch.Tensor]] = []
         self._gt: list[str] = []
@@ -340,6 +361,8 @@ class PolygonGTDataset(Dataset):
         self.skip_empty_lines = skip_empty_lines
         self.failed_samples = set()
         self.legacy_polygons = legacy_polygons
+        self.max_width = max_width
+        self.subsampling = subsampling
 
         self.seg_type = 'baselines'
         # built text transformations
@@ -478,6 +501,7 @@ class PolygonGTDataset(Dataset):
             if self.aug:
                 im = self.aug(image=im, index=index)
 
+            _check_sample_fit(im, item[1], self.max_width, self.subsampling)
             return {'image': im, 'target': item[1]}
         except Exception:
             self.failed_samples.add(index)
@@ -508,7 +532,9 @@ class GroundTruthDataset(Dataset):
                  skip_empty_lines: bool = True,
                  reorder: Union[bool, str] = True,
                  im_transforms: Callable[[Any], torch.Tensor] = v2.Identity(),
-                 augmentation: bool = False) -> None:
+                 augmentation: bool = False,
+                 max_width: Optional[int] = None,
+                 subsampling: Optional[int] = None) -> None:
         """
         Reads a list of image-text pairs and creates a ground truth set.
 
@@ -530,6 +556,12 @@ class GroundTruthDataset(Dataset):
             im_transforms: Function taking an PIL.Image and returning a
                            tensor suitable for forward passes.
             augmentation: Enables augmentation.
+            max_width: Maximum sample width after transformation. Wider
+                       samples are treated as invalid and resampled.
+            subsampling: Width subsampling factor of the network. Samples
+                         whose encoded target cannot be CTC-aligned within
+                         the subsampled width are treated as invalid and
+                         resampled.
         """
         self._images = []  # type:  Union[list[Image], list[torch.Tensor]]
         self._gt = []  # type:  list[str]
@@ -539,6 +571,8 @@ class GroundTruthDataset(Dataset):
         self.skip_empty_lines = skip_empty_lines
         self.aug = None
         self.failed_samples = set()
+        self.max_width = max_width
+        self.subsampling = subsampling
 
         self.seg_type = 'bbox'
         # built text transformations
@@ -663,6 +697,7 @@ class GroundTruthDataset(Dataset):
                     self._im_mode.value = im_mode
             if self.aug:
                 im = self.aug(image=im, index=index)
+            _check_sample_fit(im, item[1], self.max_width, self.subsampling)
             return {'image': im, 'target': item[1]}
         except Exception:
             self.failed_samples.add(index)

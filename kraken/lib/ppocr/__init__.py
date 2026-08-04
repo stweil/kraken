@@ -1,5 +1,5 @@
 #
-# Copyright 2025 Benjamin Kiessling
+# Copyright 2026 Benjamin Kiessling
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,10 +13,14 @@
 # or implied. See the License for the specific language governing
 # permissions and limitations under the License.
 """
-Hyperparameter registries.
-"""
+kraken.lib.ppocr
+~~~~~~~~~~~~~~~~
 
-OPTIMIZERS = ['Adam', 'AdamW', 'AdamW+Muon', 'SGD', 'RMSprop']
-SCHEDULERS = ['cosine', 'constant', 'exponential', 'step', '1cycle', 'reduceonplateau']
-STOPPERS = ['early', 'fixed']
-PRECISIONS = ['transformer-engine', 'transformer-engine-float16', '16-true', '16-mixed', 'bf16-true', 'bf16-mixed', '32-true', '64-true']
+PP-OCRv6 text recognition models.
+"""
+from .model import PPOCRv6Model
+from .network import (MODEL_VARIANTS, PPOCRv6Recognizer, PPOCRv6Variant,
+                     build_recognizer)
+
+__all__ = ['MODEL_VARIANTS', 'PPOCRv6Model', 'PPOCRv6Recognizer',
+           'PPOCRv6Variant', 'build_recognizer']

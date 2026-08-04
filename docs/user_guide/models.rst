@@ -91,6 +91,9 @@ Users can share models on the repository, making them discoverable for others.
 The process involves two stages: creating a deposit on Zenodo, followed by
 community approval.
 
+.. note::
+   Models can also be uploaded and managed through the browser using the `HTRMoPo web interface <https://htrmopo.inria.fr>`_.
+
 Requirements
 ~~~~~~~~~~~~
 

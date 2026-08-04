@@ -25,12 +25,18 @@ from PIL import Image
 from pathlib import Path
 from collections import Counter
 
-from kraken.ketos.util import _expand_gt, _validate_manifests, message, _create_class_map
+from kraken.ketos.util import (_create_class_map, _expand_gt,
+                               _load_resume_config, _user_supplied_params,
+                               _validate_manifests, _validate_pl_logger, message)
 
 from kraken.registry import OPTIMIZERS, SCHEDULERS, STOPPERS
 
 logging.captureWarnings(True)
 logger = logging.getLogger('kraken')
+
+_NON_CONFIG_PARAMS = frozenset({'load', 'resume', 'ground_truth',
+                                'training_data', 'evaluation_data',
+                                'pl_logger', 'log_dir'})
 
 # raise default max image size to 20k * 20k pixels
 Image.MAX_IMAGE_PIXELS = 20000 ** 2
@@ -230,6 +236,7 @@ def segtrain(ctx, **kwargs):
     """
     Trains a baseline labeling model for layout analysis
     """
+    explicit = _user_supplied_params(ctx)
     params = ctx.meta.copy()
     params.update(ctx.params)
     resume = params.pop('resume', None)
@@ -240,11 +247,7 @@ def segtrain(ctx, **kwargs):
     if sum(map(bool, [resume, load])) > 1:
         raise click.BadOptionUsage('load', 'load/resume options are mutually exclusive.')
 
-    if params.get('pl_logger') == 'tensorboard':
-        try:
-            import tensorboard  # NOQA
-        except ImportError:
-            raise click.BadOptionUsage('logger', 'tensorboard logger needs the `tensorboard` package installed.')
+    _validate_pl_logger(params.get('pl_logger'))
 
     # parse line_class_mapping from list into dictionary
     if isinstance(line_cls_map := params.get('line_class_mapping'), list):
@@ -275,23 +278,28 @@ def segtrain(ctx, **kwargs):
     if len(ground_truth) == 0 and not resume:
         raise click.UsageError('No training data was provided to the train command. Use `-t` or the `ground_truth` argument.')
 
-    if params['freq'] > 1:
-        val_check_interval = {'check_val_every_n_epoch': int(params['freq'])}
+    if resume:
+        m_config, ignored = _load_resume_config(resume, explicit, params)
+        if ignored := sorted(ignored - _NON_CONFIG_PARAMS):
+            logger.warning(f'Resuming from a checkpoint restores its data configuration; explicitly set data options {ignored} are ignored.')
     else:
-        val_check_interval = {'val_check_interval': params['freq']}
+        dm_config = BLLASegmentationTrainingDataConfig(**params)
+        m_config = BLLASegmentationTrainingConfig(**params)
 
-    cbs = [KrakenOnExceptionCheckpoint(dirpath=params.get('checkpoint_path'),
+    if m_config.freq > 1:
+        val_check_interval = {'check_val_every_n_epoch': int(m_config.freq)}
+    else:
+        val_check_interval = {'val_check_interval': m_config.freq}
+
+    cbs = [KrakenOnExceptionCheckpoint(dirpath=m_config.checkpoint_path,
                                        filename='checkpoint_abort')]
-    checkpoint_callback = ModelCheckpoint(dirpath=params.pop('checkpoint_path'),
+    checkpoint_callback = ModelCheckpoint(dirpath=m_config.checkpoint_path,
                                           save_top_k=10,
                                           monitor='val_metric',
                                           mode='max',
                                           auto_insert_metric_name=False,
                                           filename='checkpoint_{epoch:02d}-{val_metric:.4f}')
     cbs.append(checkpoint_callback)
-
-    dm_config = BLLASegmentationTrainingDataConfig(**params)
-    m_config = BLLASegmentationTrainingConfig(**params)
 
     if resume:
         data_module = BLLASegmentationDataModule.load_from_checkpoint(resume, weights_only=False)
@@ -326,16 +334,18 @@ def segtrain(ctx, **kwargs):
     trainer = KrakenTrainer(accelerator=ctx.meta['accelerator'],
                             devices=ctx.meta['device'],
                             precision=ctx.meta['precision'],
-                            max_epochs=params['epochs'] if params['quit'] == 'fixed' else -1,
-                            min_epochs=params['min_epochs'],
+                            max_epochs=m_config.epochs if m_config.quit == 'fixed' else -1,
+                            min_epochs=m_config.min_epochs,
                             enable_progress_bar=True if not ctx.meta['verbose'] else False,
                             deterministic=ctx.meta['deterministic'],
                             enable_model_summary=False,
-                            accumulate_grad_batches=params['accumulate_grad_batches'],
+                            accumulate_grad_batches=m_config.accumulate_grad_batches,
                             callbacks=cbs,
-                            gradient_clip_val=params['gradient_clip_val'],
+                            gradient_clip_val=m_config.gradient_clip_val,
                             num_sanity_val_steps=0,
                             use_distributed_sampler=False,
+                            pl_logger=params.get('pl_logger'),
+                            log_dir=params.get('log_dir'),
                             **val_check_interval)
 
     with trainer.init_module(empty_init=False if (load or resume) else True):
@@ -347,7 +357,7 @@ def segtrain(ctx, **kwargs):
                 model = BLLASegmentationModel.load_from_weights(load, config=m_config)
         elif resume:
             message(f'Resuming from checkpoint {resume}.')
-            model = BLLASegmentationModel.load_from_checkpoint(resume, weights_only=False)
+            model = BLLASegmentationModel.load_from_checkpoint(resume, config=m_config, weights_only=False)
         else:
             message('Initializing new model.')
             model = BLLASegmentationModel(m_config)
@@ -359,8 +369,8 @@ def segtrain(ctx, **kwargs):
             trainer.fit(model, data_module)
 
     score = checkpoint_callback.best_model_score.item()
-    weight_path = Path(checkpoint_callback.best_model_path).with_name(f'best_{score:.4f}.{params.get("weights_format")}')
-    opath = convert_models([checkpoint_callback.best_model_path], weight_path, weights_format=params['weights_format'])
+    weight_path = Path(checkpoint_callback.best_model_path).with_name(f'best_{score:.4f}.{m_config.weights_format}')
+    opath = convert_models([checkpoint_callback.best_model_path], weight_path, weights_format=m_config.weights_format)
     message(f'Converting best model {checkpoint_callback.best_model_path} (score: {score:.4f}) to weights {opath}')
 
 
