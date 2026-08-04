@@ -160,14 +160,7 @@ class PPOCRv6RecognitionModel(KrakenTrainerModule):
                 raise ValueError(f'Model {model} is of type {self.net.model_type} while `recognition` is expected.')
 
             self.batch, self.channels, self.height, self.width = self.net.input
-            if self.net.variant != config.variant:
-                logger.info(f'Loaded model is a {self.net.variant!r} variant; '
-                            f'overriding configured {config.variant!r}.')
-                config.variant = self.net.variant
-            if self.height != config.height:
-                logger.info(f'Loaded model expects line height {self.height}; '
-                            f'overriding configured {config.height}.')
-                config.height = self.height
+            self._sync_config_from_net()
         else:
             self.net = None
             # input geometry read by the datamodule's setup()
@@ -190,6 +183,17 @@ class PPOCRv6RecognitionModel(KrakenTrainerModule):
         self.nrtr_criterion = nn.CrossEntropyLoss(ignore_index=0, label_smoothing=0.1)
         # replaced by a compiled wrapper in on_fit_start()
         self._gtc_loss_fn = self._gtc_loss
+
+    def _sync_config_from_net(self):
+        config = self.hparams.config
+        if self.net.variant != config.variant:
+            logger.info(f'Loaded model is a {self.net.variant!r} variant; '
+                        f'overriding configured {config.variant!r}.')
+            config.variant = self.net.variant
+        if self.height != config.height:
+            logger.info(f'Loaded model expects line height {self.height}; '
+                        f'overriding configured {config.height}.')
+            config.height = self.height
 
     def on_fit_start(self):
         # silence the benign AccumulateGrad stream-mismatch warning from
@@ -335,7 +339,7 @@ class PPOCRv6RecognitionModel(KrakenTrainerModule):
         max_label = num_classes - 1
         self._bos = max_label + 1
         self._eos = max_label + 2
-        cfg = MODEL_VARIANTS[self.hparams.config.variant]['nrtr']
+        cfg = MODEL_VARIANTS[self.net.variant]['nrtr']
         return NRTRHead(in_channels=self.net.nn.backbone.out_channels,
                         vocab_size=max_label + 3,
                         d_model=cfg['dim'],
@@ -496,6 +500,7 @@ class PPOCRv6RecognitionModel(KrakenTrainerModule):
 
     def _post_load_checkpoint(self, checkpoint):
         super()._post_load_checkpoint(checkpoint)
+        self._sync_config_from_net()
         self.codec = self.net.codec
         # rebuild the auxiliary NRTR head if the checkpoint carries its weights
         if any(k.startswith('nrtr_head.') for k in checkpoint.get('state_dict', {})):
