@@ -71,7 +71,7 @@ def _lengths_and_mask(seq_lens, w_in, w_out, device):
     Runs eagerly (``torch.compiler.disable``) to keep the ``w_out / w_in`` ratio
     out of the compile trace, which otherwise spams value-range warnings.
     """
-    scaled = (seq_lens.to(torch.float32) * (w_out / float(w_in))).floor().long()
+    scaled = (seq_lens.to(device=device, dtype=torch.float32) * (w_out / float(w_in))).floor().long()
     out_lens = scaled.clamp(min=1, max=w_out)
     positions = torch.arange(w_out, device=device)
     mask = positions[None, :] < out_lens[:, None]
