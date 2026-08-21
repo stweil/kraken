@@ -98,9 +98,9 @@ works but is deprecated:
 
 .. code-block:: console
 
-    $ ketos convert -i seg.safetensors \
-                    --add-ro line_ro.safetensors \
-                    --add-ro region_ro.safetensors \
+    $ ketos convert seg.safetensors \
+                    line_ro.safetensors \
+                    region_ro.safetensors \
                     -o seg_with_line_and_region_ro.safetensors
 
     # deprecated
