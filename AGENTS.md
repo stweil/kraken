@@ -3,8 +3,6 @@
 > [!IMPORTANT]
 >
 > AI-generated code is allowed. What is **not** allowed is submitting code you do not understand. You are 100% responsible for every line, however it was produced.
->
-> Read more: [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ---
 
@@ -109,3 +107,28 @@ gh pr create
 gh pr comment
 gh issue create
 ```
+
+---
+
+## Development
+
+- Python 3.10-3.13 (`requires-python = ">=3.10,<3.14"`); CI matrix: 3.10, 3.11, 3.12, 3.13.
+- Dev install: `pip install -e .[test]` (the `test` extra adds pytest and hocr-spec). The `.[augment]` extra mentioned in README.rst no longer exists.
+- Lint: flake8, no config file in the repo. CI only fails the build on `E9,F63,F7,F82`; everything else is reported with `--max-line-length=127 --max-complexity=10`. Pass these flags explicitly if linting locally.
+- Tests: `pytest` (testpaths = `tests`). CI runs `pytest -k 'not test_train'`; the training tests in `tests/test_ketos_training.py` are slow and are not run in CI.
+  - Single test: `pytest tests/test_codec.py::test_name`
+  - Markers (see `pytest.ini`): `slow` (torch.compile / full training runs), `network` (live remote services, `tests/test_repo.py`), `legacy` (APIs deprecated for removal in kraken 8). Deselect with e.g. `-m "not slow"`.
+- Docs: `pip install .[docs]`, then `sphinx-multiversion docs build/html`. CI deploys the output to kraken.re (gh-pages) on pushes to `main` and tags.
+- Version comes from git tags via versioningit; releases are published to PyPI automatically on tag pushes.
+
+## Layout
+
+- Two CLIs, both defined as entry points in `pyproject.toml`: `kraken` (inference: `binarize`, `segment`, `ocr`, `show`, `list`, `get`; entry point `kraken.kraken:cli`) and `ketos` (training: `compile`, `pretrain`, `train`, `test`, `publish`, `rotrain`, `roadd`, `segtrain`, `segtest`, `convert`; entry point `kraken.ketos:cli`).
+- Extension points are entry points in `pyproject.toml` (`kraken.models`, `kraken.configs`, `kraken.tasks`, `kraken.lightning_modules`, `kraken.archs.*`, `kraken.loaders`, `kraken.writers`), not hardcoded registries.
+- `kraken/lib`: core (vgsl, segmentation, xml, codec, ctc_decoder, dataset, ro, ppocr, pretrain, bidi); `kraken/models`: model wrappers plus safetensors/coreml loaders and writers; `kraken/tasks`: inference task models; `kraken/train`: Lightning training modules; `kraken/ketos`: training CLI; `kraken/contrib`: standalone helper scripts.
+- Test fixtures (model files, images, XML) are committed under `tests/resources/`; no downloads are needed except for `network`-marked tests.
+
+## Local fork notes
+
+- This checkout is a fork: `origin` = stweil/kraken, `mittagessen` = upstream.
+- The repository root contains many untracked scratch files (`.mlmodel` weights, images, `.patch` files, `nohup.out`). They are working scratch, not project files: never stage or commit them.
