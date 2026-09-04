@@ -48,7 +48,7 @@ jobs:
           fetch-depth: 0
       - name: Set up Python ${{ matrix.python-version }}
         if: ${{ steps.selected.outputs.selected == 'true' }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies and kraken
@@ -82,7 +82,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Set up Python 3.13
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: 3.13
       - name: Install docs dependencies
@@ -116,7 +116,7 @@ jobs:
         persist-credentials: false
         fetch-depth: 0
     - name: Set up Python
-      uses: actions/setup-python@v6
+      uses: actions/setup-python@v7
       with:
         python-version: "3.13"
     - name: Install pypa/build
