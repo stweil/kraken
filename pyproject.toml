@@ -32,7 +32,7 @@ dependencies = [
     "lxml",
     "requests",
     "click>=8.1,<8.3",
-    "numpy",
+    "numpy<2.5",
     "Pillow>=9.2.0",
     "regex",
     "scipy>=1.15.3,<1.17",
