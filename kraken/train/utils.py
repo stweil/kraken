@@ -157,6 +157,7 @@ class KrakenTrainer(L.Trainer):
 
         kwargs['callbacks'].extend([KrakenSetOneChannelMode()])
         super().__init__(*args, **kwargs)
+        torch.set_float32_matmul_precision('medium')
         self.automatic_optimization = False
 
     def test(self, *args, **kwargs) -> TestMetrics:
