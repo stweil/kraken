@@ -1,7 +1,28 @@
 name: Lint and test
 
 on:
-  push:
+  # push:
+  workflow_dispatch:
+    inputs:
+      python-version:
+        description: Python version to test
+        required: true
+        default: '3.13'
+        type: choice
+        options:
+          - '3.10'
+          - '3.11'
+          - '3.12'
+          - '3.13'
+          - '3.14'
+      runner:
+        description: Runner to test on
+        required: true
+        default: 'ubuntu-latest'
+        type: choice
+        options:
+          - 'ubuntu-latest'
+          - 'ubuntu-24.04-arm'
 
 jobs:
   lint_and_test:
